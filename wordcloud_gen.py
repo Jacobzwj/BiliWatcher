@@ -37,6 +37,22 @@ def _load_lines_from_path(path: str) -> List[str]:
 
 
 def _choose_font_path() -> str | None:
+    # 1) 资源字体优先（适配云端无中文字体的环境）
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cand_paths = [
+            os.path.join(here, 'resources', 'NotoSansSC-Regular.otf'),
+            os.path.join(here, 'resources', 'NotoSansSC-Regular.ttf'),
+            os.path.join(here, 'resources', 'SourceHanSansCN-Regular.otf'),
+            os.path.join(here, 'resources', 'SourceHanSansCN-Regular.ttf'),
+        ]
+        for p in cand_paths:
+            if os.path.exists(p):
+                return p
+    except Exception:
+        pass
+
+    # 2) 系统字体兜底
     candidates = [
         'Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'Source Han Sans CN',
         'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', 'DengXian'

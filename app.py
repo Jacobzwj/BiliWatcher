@@ -49,6 +49,22 @@ def ensure_dir(path: str) -> None:
 
 # --- 字体选择（中英文友好） ---
 def choose_font_family(candidates: List[str] = None) -> str:
+    # 1) 优先注册并使用 resources 下的中文字体（云端常无中文系统字体）
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        for rel in [
+            os.path.join(here, 'resources', 'NotoSansSC-Regular.otf'),
+            os.path.join(here, 'resources', 'NotoSansSC-Regular.ttf'),
+            os.path.join(here, 'resources', 'SourceHanSansCN-Regular.otf'),
+            os.path.join(here, 'resources', 'SourceHanSansCN-Regular.ttf'),
+        ]:
+            if os.path.exists(rel):
+                fm.fontManager.addfont(rel)
+                return fm.FontProperties(fname=rel).get_name()
+    except Exception:
+        pass
+
+    # 2) 退回系统已安装字体
     if candidates is None:
         candidates = [
             'Microsoft YaHei', 'DengXian', 'Noto Sans CJK SC', 'Noto Sans SC',
