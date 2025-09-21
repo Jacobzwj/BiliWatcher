@@ -1,0 +1,14 @@
+tqdm>=4.66.0
+requests>=2.31.0
+pandas>=2.0.0
+jieba>=0.42.1
+networkx>=3.1
+matplotlib>=3.7.0
+python-louvain>=0.16
+adjustText>=1.1.1
+distinctipy>=1.2.3
+hsluv>=5.0.4
+openai>=1.35.0
+wordcloud>=1.9.3
+streamlit>=1.36.0
+
