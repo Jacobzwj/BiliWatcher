@@ -157,6 +157,16 @@ def _load_comment_summary():
     return __import__('comment_summary')
 
 
+def _get_effective_api_key() -> str:
+    """获取可用的 DeepSeek API Key：优先用户输入，其次 secrets 默认。"""
+    try:
+        default_api = st.secrets.get('DEEPSEEK_API_KEY', '')
+    except Exception:
+        default_api = ''
+    user = (st.session_state.get('user_api_key') or '').strip()
+    return user or default_api
+
+
 def load_stopwords(file_path: str) -> List[str]:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -502,22 +512,25 @@ def render_streamlit_app():
     # Sidebar 参数
     with st.sidebar:
         st.header('参数设置')
-        # DeepSeek API Key：云端默认来自 secrets，用户可覆盖；不落盘
+        # DeepSeek API Key：云端默认来自 secrets，用户可覆盖；不直接显示默认值
         try:
             default_api = st.secrets.get('DEEPSEEK_API_KEY', '')
         except Exception:
             default_api = ''
-        if 'deepseek_api_key' not in st.session_state:
-            st.session_state['deepseek_api_key'] = default_api
+        # 用单独的 session_state 键存放“用户输入的 key”，默认空字符串
+        if 'user_api_key' not in st.session_state:
+            st.session_state['user_api_key'] = ''
         col_api1, col_api2 = st.columns([1,1])
         with col_api1:
             if st.button('恢复默认 Key', width='stretch'):
-                st.session_state['deepseek_api_key'] = default_api
+                # 恢复为默认：将用户输入清空，实际取用时回落到 secrets
+                st.session_state['user_api_key'] = ''
         with col_api2:
             if st.button('清空 Key', width='stretch'):
-                st.session_state['deepseek_api_key'] = ''
-        st.text_input('DeepSeek API Key（可选，用于AI总结）', type='password', key='deepseek_api_key')
-        st.caption('说明：若部署者配置了默认 Key，会被自动填充但不可见；你可改成自己的 Key。不会保存到服务器。')
+                st.session_state['user_api_key'] = ''
+        # 仅显示“用户输入”的 Key，不显示（也不回显）默认 Key
+        st.text_input('DeepSeek API Key（可选，用于AI总结）', type='password', key='user_api_key')
+        st.caption('说明：部署者配置的默认 Key 不会在此处回显；若留空则使用默认 Key。不会保存到服务器。')
         # Cookies：不保存到服务器，仅本次会话
         if 'bili_cookie' not in st.session_state:
             st.session_state['bili_cookie'] = ''
@@ -747,7 +760,7 @@ def render_streamlit_app():
         if st.button('Step 5 · AI 总结语义网络', width='stretch'):
             if not st.session_state.get('network_info'):
                 st.warning('请先完成 Step 4（绘制网络）')
-            elif not st.session_state.get('deepseek_api_key'):
+            elif not _get_effective_api_key():
                 st.warning('请在侧边栏填写 DeepSeek API Key')
             else:
                 st.session_state['ai_summary_text'] = ''
@@ -757,7 +770,7 @@ def render_streamlit_app():
         if st.button('Step 6 · AI总结评论主题与热门议题', width='stretch'):
             if not st.session_state.get('raw_csv'):
                 st.warning('请先完成 Step 1（抓取评论），或提供评论CSV')
-            elif not st.session_state.get('deepseek_api_key'):
+            elif not _get_effective_api_key():
                 st.warning('请在侧边栏填写 DeepSeek API Key')
             else:
                 st.session_state['cmt_ai_text'] = ''
@@ -846,7 +859,7 @@ def render_streamlit_app():
                                 for c in info.get('communities', []):
                                     st.markdown(f"- 社区 {c['index']}（颜色 {c['color']}）：{', '.join(c['nodes'])}")
                         # DeepSeek 总结
-                        if st.session_state.get('deepseek_api_key'):
+                        if _get_effective_api_key():
                             # 触发在“结果与下载”区域的流式渲染
                             st.session_state['ai_summary_text'] = ''
                             st.session_state['ai_trigger'] = True
@@ -955,13 +968,13 @@ def render_streamlit_app():
         if st.session_state.get('ai_summary_text'):
             st.markdown(st.session_state['ai_summary_text'])
         # 若触发标志打开，则继续流式追加
-        if st.session_state.get('ai_trigger') and st.session_state.get('deepseek_api_key') and st.session_state.get('network_info'):
+        if st.session_state.get('ai_trigger') and _get_effective_api_key() and st.session_state.get('network_info'):
             try:
                 _ds = _load_deepseek_summary()
                 ai_holder = st.empty()
                 text_acc = st.session_state.get('ai_summary_text', '')
                 ai_holder.markdown(text_acc)
-                for piece in _ds.stream_summarize_with_deepseek(st.session_state['deepseek_api_key'], st.session_state['network_info'], language='zh'):
+                for piece in _ds.stream_summarize_with_deepseek(_get_effective_api_key(), st.session_state['network_info'], language='zh'):
                     text_acc += piece
                     st.session_state['ai_summary_text'] = text_acc
                     ai_holder.markdown(text_acc)
@@ -977,14 +990,14 @@ def render_streamlit_app():
     if st.session_state.get('cmt_ai_text'):
         st.markdown(st.session_state['cmt_ai_text'])
     # 若触发标志打开，则继续流式追加
-    if st.session_state.get('cmt_ai_trigger') and st.session_state.get('deepseek_api_key') and st.session_state.get('raw_csv'):
+    if st.session_state.get('cmt_ai_trigger') and _get_effective_api_key() and st.session_state.get('raw_csv'):
         try:
             _cs = _load_comment_summary()
             holder = st.empty()
             acc = st.session_state.get('cmt_ai_text', '')
             holder.markdown(acc)
             topk = int(st.session_state.get('cmt_ai_topk') or 100)
-            for chunk in _cs.stream_summarize_comment_themes(st.session_state['deepseek_api_key'], st.session_state['raw_csv'], top_k=topk, language='zh'):
+            for chunk in _cs.stream_summarize_comment_themes(_get_effective_api_key(), st.session_state['raw_csv'], top_k=topk, language='zh'):
                 acc += chunk
                 st.session_state['cmt_ai_text'] = acc
                 holder.markdown(acc)
