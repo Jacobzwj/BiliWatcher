@@ -599,6 +599,10 @@ def render_streamlit_app():
         st.session_state.cmt_ai_text = ''
     if 'cmt_ai_trigger' not in st.session_state:
         st.session_state.cmt_ai_trigger = False
+    if 'crawl_stats' not in st.session_state:
+        st.session_state.crawl_stats = {}
+    if 'pipeline_done' not in st.session_state:
+        st.session_state.pipeline_done = False
 
     col1, col2, col3, col4, col5, col6 = st.columns([1,1,1,1,1,1])
 
@@ -654,6 +658,7 @@ def render_streamlit_app():
                         raw_csv = outfile
                         st.session_state.raw_csv = raw_csv
                         st.success(f'已完成抓取：{raw_csv}（总数 {len(comments)}，耗时 {elapsed:.2f}s）')
+                        st.session_state.pipeline_done = True
                         # 保存统计，便于重绘后复现
                         try:
                             st.session_state.crawl_stats = {'total': int(len(comments)), 'elapsed': float(elapsed)}
@@ -898,6 +903,7 @@ def render_streamlit_app():
                         except Exception:
                             pass
                         st.success('流水线完成')
+                        st.session_state.pipeline_done = True
                         # 展示抓取结束原因（成功或截断），并保存统计
                         try:
                             crawler_info = _load_crawler_module()
@@ -930,8 +936,13 @@ def render_streamlit_app():
 
     # 已移除旧的 col6 区块（词云已在 Step 3）
 
-    # —— 固定展示：抓取结束说明（跨重绘保留） ——
+    # —— 固定展示：流水线统计 + 抓取结束说明（跨重绘保留） ——
     try:
+        stats = st.session_state.get('crawl_stats') or {}
+        if stats:
+            total = stats.get('total')
+            elapsed = stats.get('elapsed')
+            st.info(f"已爬取评论数：{total if total is not None else '?'} ｜ 已运行时间：{elapsed if elapsed is not None else '?'}s")
         _persist_info = st.session_state.get('fetch_end_info') or {}
         if _persist_info:
             st.caption(_format_end_info_cn(_persist_info))
@@ -942,6 +953,11 @@ def render_streamlit_app():
     st.subheader('结果与下载')
     # 在结果区顶部也固定展示一次抓取结束说明，防止分页/下载触发的 rerun 后用户看不到
     try:
+        stats2 = st.session_state.get('crawl_stats') or {}
+        if stats2:
+            total2 = stats2.get('total')
+            elapsed2 = stats2.get('elapsed')
+            st.caption(f"本次统计：评论数 {total2 if total2 is not None else '?'}，用时 {elapsed2 if elapsed2 is not None else '?'}s")
         _persist_info2 = st.session_state.get('fetch_end_info') or {}
         if _persist_info2:
             st.caption(_format_end_info_cn(_persist_info2))
