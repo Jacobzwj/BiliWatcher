@@ -2,6 +2,9 @@ import argparse
 import os
 import re
 import time
+import io
+import base64
+import zipfile
 from typing import List, Tuple
 import importlib.util
 
@@ -16,6 +19,10 @@ import matplotlib.patches as mpatches
 import streamlit as st
 import importlib.util as _il_util
 from crawler import get_video_id, fetch_comments, save_comments_to_csv, headers as crawler_headers, sanitize_filename as crawler_sanitize
+try:
+    from crawler import get_last_fetch_info as crawler_last_info
+except Exception:
+    crawler_last_info = None
 from cooccurrence import build_cooccurrence_csv
 from network import draw_network
 from wordcloud_gen import build_word_frequencies, generate_wordcloud
@@ -626,6 +633,28 @@ def render_streamlit_app():
                         raw_csv = outfile
                         st.session_state.raw_csv = raw_csv
                         st.success(f'已完成抓取：{raw_csv}（总数 {len(comments)}，耗时 {elapsed:.2f}s）')
+                        # 展示抓取结束原因（成功或截断）
+                        try:
+                            if hasattr(crawler, 'get_last_fetch_info'):
+                                _info = crawler.get_last_fetch_info()
+                            elif callable(crawler_last_info):
+                                _info = crawler_last_info()
+                            else:
+                                _info = {}
+                            if _info:
+                                _reason_map = {
+                                    'is_end': '平台返回：已到末尾',
+                                    'max_offset': '已到平台翻页上限',
+                                    'hard_limit': '达到本地安全上限',
+                                    'no_progress': '无新增数据（可能已抓完）',
+                                    'http_error': '网络/HTTP 错误',
+                                    'exception': '请求异常中断',
+                                    'exhausted': '达到最大页数限制',
+                                }
+                                _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
+                                st.caption(f"抓取结束：{_reason_map.get(_info.get('end_reason'),'未知')}；接口：{_method_map.get(_info.get('method'), _info.get('method','?'))}；页数：{_info.get('pages','?')}；总计：{_info.get('total_count', len(comments))}")
+                        except Exception:
+                            pass
                     except Exception as e:
                         st.error(f'抓取失败：{e}')
 
@@ -853,6 +882,29 @@ def render_streamlit_app():
                         except Exception:
                             pass
                         st.success('流水线完成')
+                        # 展示抓取结束原因（成功或截断）
+                        try:
+                            crawler_info = _load_crawler_module()
+                            if hasattr(crawler_info, 'get_last_fetch_info'):
+                                _info2 = crawler_info.get_last_fetch_info()
+                            elif callable(crawler_last_info):
+                                _info2 = crawler_last_info()
+                            else:
+                                _info2 = {}
+                            if _info2:
+                                _reason_map = {
+                                    'is_end': '平台返回：已到末尾',
+                                    'max_offset': '已到平台翻页上限',
+                                    'hard_limit': '达到本地安全上限',
+                                    'no_progress': '无新增数据（可能已抓完）',
+                                    'http_error': '网络/HTTP 错误',
+                                    'exception': '请求异常中断',
+                                    'exhausted': '达到最大页数限制',
+                                }
+                                _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
+                                st.caption(f"抓取结束：{_reason_map.get(_info2.get('end_reason'),'未知')}；接口：{_method_map.get(_info2.get('method'), _info2.get('method','?'))}；页数：{_info2.get('pages','?')}；总计：{_info2.get('total_count','?')}")
+                        except Exception:
+                            pass
                         if info:
                             st.info(f"社区数：{info.get('num_communities')}；模块度：{(info.get('modularity') or 0):.3f}")
                             with st.expander('查看各社区节点列表'):
@@ -1005,6 +1057,193 @@ def render_streamlit_app():
             st.error(f'评论主题总结失败：{_e}')
         finally:
             st.session_state['cmt_ai_trigger'] = False
+
+
+    # —— 导出与快照 ——
+    st.markdown('---')
+    st.subheader('导出与快照')
+
+    def _file_to_b64(path: str) -> str:
+        try:
+            with open(path, 'rb') as f:
+                return base64.b64encode(f.read()).decode('ascii')
+        except Exception:
+            return ''
+
+    def _df_html_safely(df) -> str:
+        try:
+            return df.to_html(index=False, border=0)
+        except Exception:
+            return '<p>表格生成失败</p>'
+
+    def _build_report_html() -> str:
+        title_txt = (st.session_state.get('report_title') or (st.session_state.get('raw_csv') and os.path.basename(st.session_state['raw_csv']).replace('.csv','')) or '报告')
+        # 基础数据
+        raw_csv = st.session_state.get('raw_csv')
+        processed_csv = st.session_state.get('processed_csv')
+        net_png = st.session_state.get('out_png')
+        wc_png = st.session_state.get('wordcloud_png')
+        wf_top = st.session_state.get('word_freqs') or []
+        # 预览表
+        raw_table_html = ''
+        co_table_html = ''
+        try:
+            if raw_csv and os.path.exists(raw_csv):
+                df_full = pd.read_csv(raw_csv)
+                if '点赞数量' in df_full.columns:
+                    df_full['点赞数量'] = pd.to_numeric(df_full['点赞数量'], errors='coerce').fillna(0).astype(int)
+                    df_full = df_full.sort_values('点赞数量', ascending=False)
+                raw_table_html = _df_html_safely(df_full.head(50))
+        except Exception:
+            pass
+        try:
+            if processed_csv and os.path.exists(processed_csv):
+                df_co = pd.read_csv(processed_csv)
+                co_table_html = _df_html_safely(df_co.head(100))
+        except Exception:
+            pass
+        # 词频 top10
+        wf_html = ''
+        try:
+            if wf_top:
+                _pd = pd.DataFrame(wf_top[:10], columns=['词语','词频'])
+                wf_html = _df_html_safely(_pd)
+        except Exception:
+            pass
+        # 为交互表格添加 DataTables 包装
+        def _dt_wrap(html: str, table_id: str, classes: str = 'display compact') -> str:
+            try:
+                if not html:
+                    return ''
+                return html.replace('<table', f'<table id="{table_id}" class="{classes}"', 1)
+            except Exception:
+                return html
+
+        raw_table_html = _dt_wrap(raw_table_html, 'raw_table')
+        co_table_html = _dt_wrap(co_table_html, 'co_table')
+        wf_html = _dt_wrap(wf_html, 'wf_table')
+
+        # 图片 base64
+        wc_b64 = _file_to_b64(wc_png) if wc_png and os.path.exists(wc_png) else ''
+        net_b64 = _file_to_b64(net_png) if net_png and os.path.exists(net_png) else ''
+        # AI 文本
+        ai1 = st.session_state.get('ai_summary_text') or ''
+        ai2 = st.session_state.get('cmt_ai_text') or ''
+        # 结束原因
+        end_info = {}
+        try:
+            if callable(crawler_last_info):
+                end_info = crawler_last_info() or {}
+        except Exception:
+            end_info = {}
+        _reason_map = {
+            'is_end': '平台返回：已到末尾',
+            'max_offset': '已到平台翻页上限',
+            'hard_limit': '达到本地安全上限',
+            'no_progress': '无新增数据（可能已抓完）',
+            'http_error': '网络/HTTP 错误',
+            'exception': '请求异常中断',
+            'exhausted': '达到最大页数限制',
+        }
+        _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
+        end_line = f"抓取结束：{_reason_map.get(end_info.get('end_reason'),'未知')}；接口：{_method_map.get(end_info.get('method'), end_info.get('method','?'))}；页数：{end_info.get('pages','?')}；总计：{end_info.get('total_count','?')}"
+
+        html = f"""
+<!doctype html>
+<html lang=zh>
+<head>
+  <meta charset="utf-8" />
+  <title>{title_txt} - 报告</title>
+  <!-- DataTables（CDN，需联网以获得交互分页；离线则回退为静态表） -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/datatables.net-dt@1.13.8/css/jquery.dataTables.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.8/js/jquery.dataTables.min.js"></script>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans SC', 'Microsoft YaHei', sans-serif; margin: 24px; }}
+    h1, h2 {{ margin: 10px 0; }}
+    .row {{ display:flex; gap:24px; align-items:flex-start; }}
+    .col {{ flex:1; min-width:0; }}
+    img {{ max-width:100%; height:auto; border:1px solid #eee; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #eee; padding: 6px 8px; }}
+    caption {{ text-align:left; color:#666; margin-bottom:6px; }}
+    .card {{ background:#fafafa; border:1px solid #eee; padding:12px; margin:12px 0; }}
+  </style>
+  </head>
+  <body>
+    <h1>{title_txt} - 运行报告</h1>
+    <div class="card"><strong>{end_line}</strong></div>
+
+    <h2>评论（按赞前50）</h2>
+    {raw_table_html}
+
+    <div class="row">
+      <div class="col">
+        <h2>词频 Top 10</h2>
+        {wf_html}
+      </div>
+      <div class="col">
+        <h2>词云</h2>
+        {('<img src="data:image/png;base64,' + wc_b64 + '" />') if wc_b64 else '<p>无词云</p>'}
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col">
+        <h2>共现 CSV（前100行）</h2>
+        {co_table_html}
+      </div>
+      <div class="col">
+        <h2>语义网络图</h2>
+        {('<img src="data:image/png;base64,' + net_b64 + '" />') if net_b64 else '<p>无网络图</p>'}
+      </div>
+    </div>
+
+    <h2>AI 总结（语义网络聚类）</h2>
+    <div class="card">{ai1.replace('\n','<br/>')}</div>
+
+    <h2>AI 总结：评论主题与热门议题（按点赞TopX）</h2>
+    <div class="card">{ai2.replace('\n','<br/>')}</div>
+    <script>
+      (function(){{
+        if (window.jQuery && $.fn && $.fn.dataTable) {{
+          try {{
+            if (document.getElementById('raw_table')) $('#raw_table').DataTable({{pageLength:10, deferRender:true}});
+            if (document.getElementById('co_table')) $('#co_table').DataTable({{pageLength:25, deferRender:true}});
+            if (document.getElementById('wf_table')) $('#wf_table').DataTable({{paging:false, searching:false, info:false}});
+          }} catch(e) {{ console.warn(e); }}
+        }}
+      }})();
+    </script>
+  </body>
+</html>
+"""
+        return html
+
+    col_r1, col_r2 = st.columns([1,1])
+    with col_r1:
+        try:
+            report_html = _build_report_html()
+            file_name = (crawler_sanitize(st.session_state.get('report_title') or (st.session_state.get('raw_csv') and os.path.basename(st.session_state['raw_csv']).replace('.csv','')) or 'report') + '_report.html')
+            st.download_button('下载报告HTML（快照）', data=report_html.encode('utf-8'), file_name=file_name, mime='text/html')
+        except Exception:
+            st.caption('报告生成失败')
+    with col_r2:
+        try:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+                # 写入报告
+                zf.writestr('report.html', (_build_report_html() or '').encode('utf-8'))
+                # 附件文件
+                for p in [st.session_state.get('raw_csv'), st.session_state.get('processed_csv'), st.session_state.get('out_png'), st.session_state.get('wordcloud_png'), st.session_state.get('wordfreq_csv')]:
+                    if p and os.path.exists(p):
+                        try:
+                            zf.write(p, arcname=os.path.basename(p))
+                        except Exception:
+                            pass
+            st.download_button('下载结果ZIP（含CSV/PNG/报告）', data=buf.getvalue(), file_name='results_bundle.zip')
+        except Exception:
+            st.caption('ZIP 打包失败')
 
 
 if __name__ == '__main__':
