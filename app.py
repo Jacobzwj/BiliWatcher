@@ -955,6 +955,13 @@ def render_streamlit_app():
 
     st.markdown('---')
     st.subheader('结果与下载')
+    # 在结果区顶部也固定展示一次抓取结束说明，防止分页/下载触发的 rerun 后用户看不到
+    try:
+        _persist_info2 = st.session_state.get('fetch_end_info') or {}
+        if _persist_info2:
+            st.caption(_format_end_info_cn(_persist_info2))
+    except Exception:
+        pass
 
     def _preview_csv_table(csv_path: str, title: str):
         try:
