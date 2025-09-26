@@ -654,6 +654,11 @@ def render_streamlit_app():
                         raw_csv = outfile
                         st.session_state.raw_csv = raw_csv
                         st.success(f'已完成抓取：{raw_csv}（总数 {len(comments)}，耗时 {elapsed:.2f}s）')
+                        # 保存统计，便于重绘后复现
+                        try:
+                            st.session_state.crawl_stats = {'total': int(len(comments)), 'elapsed': float(elapsed)}
+                        except Exception:
+                            st.session_state.crawl_stats = {'total': None, 'elapsed': float(elapsed)}
                         # 展示抓取结束原因（成功或截断）
                         try:
                             if hasattr(crawler, 'get_last_fetch_info'):
@@ -662,18 +667,8 @@ def render_streamlit_app():
                                 _info = crawler_last_info()
                             else:
                                 _info = {}
-                            if _info:
-                                _reason_map = {
-                                    'is_end': '平台返回：已到末尾',
-                                    'max_offset': '已到平台翻页上限',
-                                    'hard_limit': '达到本地安全上限',
-                                    'no_progress': '无新增数据（可能已抓完）',
-                                    'http_error': '网络/HTTP 错误',
-                                    'exception': '请求异常中断',
-                                    'exhausted': '达到最大页数限制',
-                                }
-                                _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
-                                st.caption(f"抓取结束：{_reason_map.get(_info.get('end_reason'),'未知')}；接口：{_method_map.get(_info.get('method'), _info.get('method','?'))}；页数：{_info.get('pages','?')}；总计：{_info.get('total_count', len(comments))}")
+                            st.session_state['fetch_end_info'] = _info or {}
+                            st.caption(_format_end_info_cn(_info or {}, fallback_total=len(comments)))
                         except Exception:
                             pass
                     except Exception as e:
@@ -903,7 +898,7 @@ def render_streamlit_app():
                         except Exception:
                             pass
                         st.success('流水线完成')
-                        # 展示抓取结束原因（成功或截断）
+                        # 展示抓取结束原因（成功或截断），并保存统计
                         try:
                             crawler_info = _load_crawler_module()
                             if hasattr(crawler_info, 'get_last_fetch_info'):
@@ -912,18 +907,8 @@ def render_streamlit_app():
                                 _info2 = crawler_last_info()
                             else:
                                 _info2 = {}
-                            if _info2:
-                                _reason_map = {
-                                    'is_end': '平台返回：已到末尾',
-                                    'max_offset': '已到平台翻页上限',
-                                    'hard_limit': '达到本地安全上限',
-                                    'no_progress': '无新增数据（可能已抓完）',
-                                    'http_error': '网络/HTTP 错误',
-                                    'exception': '请求异常中断',
-                                    'exhausted': '达到最大页数限制',
-                                }
-                                _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
-                                st.caption(f"抓取结束：{_reason_map.get(_info2.get('end_reason'),'未知')}；接口：{_method_map.get(_info2.get('method'), _info2.get('method','?'))}；页数：{_info2.get('pages','?')}；总计：{_info2.get('total_count','?')}")
+                            st.session_state['fetch_end_info'] = _info2 or {}
+                            st.caption(_format_end_info_cn(_info2 or {}))
                         except Exception:
                             pass
                         if info:
