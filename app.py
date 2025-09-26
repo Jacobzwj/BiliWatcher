@@ -945,6 +945,14 @@ def render_streamlit_app():
 
     # 已移除旧的 col6 区块（词云已在 Step 3）
 
+    # —— 固定展示：抓取结束说明（跨重绘保留） ——
+    try:
+        _persist_info = st.session_state.get('fetch_end_info') or {}
+        if _persist_info:
+            st.caption(_format_end_info_cn(_persist_info))
+    except Exception:
+        pass
+
     st.markdown('---')
     st.subheader('结果与下载')
 
@@ -1152,6 +1160,14 @@ def render_streamlit_app():
         ai2 = st.session_state.get('cmt_ai_text') or ''
         # 结束原因：优先读取 session_state
         end_info = st.session_state.get('fetch_end_info') or {}
+        # 兜底：若 session_state 为空，尝试再次从模块读取一次（避免某些云端重绘导致的空白）
+        if not end_info:
+            try:
+                cmod = _load_crawler_module()
+                if hasattr(cmod, 'get_last_fetch_info'):
+                    end_info = cmod.get_last_fetch_info() or {}
+            except Exception:
+                end_info = {}
         end_line = _format_end_info_cn(end_info)
 
         html = f"""
