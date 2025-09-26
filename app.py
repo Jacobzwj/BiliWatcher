@@ -174,6 +174,27 @@ def _get_effective_api_key() -> str:
     return user or default_api
 
 
+def _format_end_info_cn(info: dict, fallback_total: int | None = None) -> str:
+    try:
+        reason_map = {
+            'is_end': '平台返回：已到末尾',
+            'max_offset': '已到平台翻页上限',
+            'hard_limit': '达到本地安全上限',
+            'no_progress': '无新增数据（可能已抓完）',
+            'http_error': '网络/HTTP 错误',
+            'exception': '请求异常中断',
+            'exhausted': '达到最大页数限制',
+        }
+        method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
+        r = reason_map.get((info or {}).get('end_reason'), '未知')
+        m = method_map.get((info or {}).get('method'), (info or {}).get('method', '?'))
+        p = (info or {}).get('pages', '?')
+        t = (info or {}).get('total_count', fallback_total if fallback_total is not None else '?')
+        return f"抓取结束：{r}；接口：{m}；页数：{p}；总计：{t}"
+    except Exception:
+        return ''
+
+
 def load_stopwords(file_path: str) -> List[str]:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -1129,24 +1150,9 @@ def render_streamlit_app():
         # AI 文本
         ai1 = st.session_state.get('ai_summary_text') or ''
         ai2 = st.session_state.get('cmt_ai_text') or ''
-        # 结束原因
-        end_info = {}
-        try:
-            if callable(crawler_last_info):
-                end_info = crawler_last_info() or {}
-        except Exception:
-            end_info = {}
-        _reason_map = {
-            'is_end': '平台返回：已到末尾',
-            'max_offset': '已到平台翻页上限',
-            'hard_limit': '达到本地安全上限',
-            'no_progress': '无新增数据（可能已抓完）',
-            'http_error': '网络/HTTP 错误',
-            'exception': '请求异常中断',
-            'exhausted': '达到最大页数限制',
-        }
-        _method_map = {'wbi': '光标接口（wbi）', 'legacy': '分页接口（旧版）'}
-        end_line = f"抓取结束：{_reason_map.get(end_info.get('end_reason'),'未知')}；接口：{_method_map.get(end_info.get('method'), end_info.get('method','?'))}；页数：{end_info.get('pages','?')}；总计：{end_info.get('total_count','?')}"
+        # 结束原因：优先读取 session_state
+        end_info = st.session_state.get('fetch_end_info') or {}
+        end_line = _format_end_info_cn(end_info)
 
         html = f"""
 <!doctype html>
