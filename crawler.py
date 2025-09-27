@@ -222,12 +222,20 @@ def fetch_comments(video_id, max_pages=1000, on_progress=None, hard_max_count: i
         wbi_limit = 20000 if hard_max_count is None else max(int(hard_max_count), 20000)
         comments = _fetch_comments_via_wbi(video_id, on_progress=on_progress, hard_max_count=wbi_limit)
         if comments:
-            _last_fetch_info.setdefault('method', 'wbi')
-            _last_fetch_info.setdefault('end_reason', 'is_end')
-            _last_fetch_info['total_count'] = len(comments)
-            return comments
+            # 记录 WBI 阶段信息
+            wbi_pages = _last_fetch_info.get('pages', 0)
+            _last_fetch_info.update({'method': 'wbi', 'total_count': len(comments)})
+            # 回落判定：WBI 数量过小或失败终止
+            end_reason = _last_fetch_info.get('end_reason')
+            fallback_needed = (len(comments) < 1000 and (wbi_pages or 0) <= 5) or end_reason in ('wbi_error', 'wbi_exception')
+            if not fallback_needed:
+                return comments
+            print('WBI 数量偏小或异常，启用 legacy 继续补抓…')
+            # 标记将回落
+            _last_fetch_info.update({'method': 'wbi_legacy', 'fallback': 'wbi_small_or_error', 'wbi_pages': wbi_pages, 'wbi_count': len(comments)})
     except Exception:
         comments = []
+    # 若走到这里，说明 WBI 失败或数量异常偏小，回退到 legacy 接口
     for page in range(1, max_pages + 1):
         url = f'https://api.bilibili.com/x/v2/reply?pn={page}&type=1&oid={video_id}&sort=2'
         try:
@@ -298,9 +306,13 @@ def fetch_comments(video_id, max_pages=1000, on_progress=None, hard_max_count: i
             raise
         # 随机延时，减少被限流概率
         time.sleep(random.uniform(0.1, 0.2))
-    _last_fetch_info.setdefault('method', 'legacy')
-    _last_fetch_info.setdefault('end_reason', 'exhausted' if page >= max_pages else _last_fetch_info.get('end_reason'))
-    _last_fetch_info['total_count'] = len(comments)
+    # 若之前标记了回落，则补充 legacy 结果；否则是纯 legacy
+    if _last_fetch_info.get('method') == 'wbi_legacy':
+        _last_fetch_info.update({'legacy_pages': page, 'total_count': len(comments)})
+    else:
+        _last_fetch_info.update({'method': 'legacy'})
+        _last_fetch_info.setdefault('end_reason', 'exhausted' if page >= max_pages else _last_fetch_info.get('end_reason'))
+        _last_fetch_info['total_count'] = len(comments)
     return comments
 
 
