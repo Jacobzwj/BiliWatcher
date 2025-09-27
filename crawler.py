@@ -25,15 +25,26 @@ _MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33
 
 def _get_wbi_keys() -> tuple[str, str]:
     url = 'https://api.bilibili.com/x/web-interface/nav'
-    r = requests.get(url, headers=headers, timeout=10)
-    r.raise_for_status()
-    j = r.json()
-    img = j.get('data', {}).get('wbi_img', {})
-    img_url = img.get('img_url', '')
-    sub_url = img.get('sub_url', '')
-    img_key = os.path.basename(img_url).split('.')[0]
-    sub_key = os.path.basename(sub_url).split('.')[0]
-    return img_key, sub_key
+    last_err = None
+    for _ in range(5):
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            j = r.json()
+            img = j.get('data', {}).get('wbi_img', {})
+            img_url = img.get('img_url', '')
+            sub_url = img.get('sub_url', '')
+            img_key = os.path.basename(img_url).split('.')[0]
+            sub_key = os.path.basename(sub_url).split('.')[0]
+            if img_key and sub_key:
+                return img_key, sub_key
+        except Exception as e:
+            last_err = e
+            time.sleep(0.4)
+    # 兜底，避免异常直接中断主流程
+    if last_err:
+        print(f"获取 WBI keys 失败，使用空 key 兜底：{last_err}")
+    return '', ''
 
 def _get_mixin_key(img_key: str, sub_key: str) -> str:
     s = (img_key + sub_key)
@@ -52,11 +63,13 @@ def _wbi_sign(params: dict) -> dict:
     filtered['w_rid'] = w_rid
     return filtered
 
-def _fetch_comments_via_wbi(video_id: str, on_progress=None, hard_max_count: int | None = 20000):
+def _fetch_comments_via_wbi(video_id: str, on_progress=None, hard_max_count: int | None = 20000,
+                            max_fail_streak: int = 8):
     comments = []
     next_cursor = 0
     started = time.time()
     pages = 0
+    fail_streak = 0
     while True:
         base = 'https://api.bilibili.com/x/v2/reply/wbi/main'
         params = {
@@ -68,12 +81,17 @@ def _fetch_comments_via_wbi(video_id: str, on_progress=None, hard_max_count: int
         }
         try:
             signed = _wbi_sign(params)
-            resp = requests.get(base, params=signed, headers=headers, timeout=10)
+            resp = requests.get(base, params=signed, headers=headers, timeout=12)
             resp.raise_for_status()
             data = resp.json()
             if data.get('code', 0) != 0:
-                # 光标接口失败则中断，交给旧接口兜底
-                raise RuntimeError(f"wbi 接口错误：code={data.get('code')}, message={data.get('message')}")
+                # 不再抛出，改为重试，避免回落到 legacy 导致 6-7k 处提前结束
+                fail_streak += 1
+                if fail_streak >= max_fail_streak:
+                    _last_fetch_info.update({'method': 'wbi', 'end_reason': 'wbi_error', 'pages': pages, 'code': data.get('code'), 'message': data.get('message')})
+                    break
+                time.sleep(min(1.0 * fail_streak, 3.0))
+                continue
             d = data.get('data', {}) or {}
             replies = d.get('replies') or []
             if not isinstance(replies, list):
@@ -111,10 +129,16 @@ def _fetch_comments_via_wbi(video_id: str, on_progress=None, hard_max_count: int
             if hard_max_count is not None and len(comments) >= int(hard_max_count):
                 _last_fetch_info.update({'method': 'wbi', 'end_reason': 'hard_limit', 'pages': pages})
                 break
-            time.sleep(random.uniform(0.1, 0.2))
-        except Exception:
-            # 交给旧接口兜底
-            raise
+            # 成功一次后清零失败计数
+            fail_streak = 0
+            time.sleep(random.uniform(0.1, 0.25))
+        except Exception as e:
+            # 网络/解析异常：重试而不是抛出
+            fail_streak += 1
+            if fail_streak >= max_fail_streak:
+                _last_fetch_info.update({'method': 'wbi', 'end_reason': 'wbi_exception', 'pages': pages, 'error': str(e)})
+                break
+            time.sleep(min(1.0 * fail_streak, 3.0))
     _last_fetch_info.update({'method': 'wbi', 'total_count': len(comments), 'duration_sec': time.time() - started})
     return comments
 
@@ -194,7 +218,9 @@ def fetch_comments(video_id, max_pages=1000, on_progress=None, hard_max_count: i
     _last_fetch_info.clear()
     # 尝试更稳的光标接口（wbi）。若失败，则回退原分页接口
     try:
-        comments = _fetch_comments_via_wbi(video_id, on_progress=on_progress, hard_max_count=hard_max_count or 20000)
+        # WBI 建议更大的本地上限，至少 20000，避免大体量视频过早截断
+        wbi_limit = 20000 if hard_max_count is None else max(int(hard_max_count), 20000)
+        comments = _fetch_comments_via_wbi(video_id, on_progress=on_progress, hard_max_count=wbi_limit)
         if comments:
             _last_fetch_info.setdefault('method', 'wbi')
             _last_fetch_info.setdefault('end_reason', 'is_end')
